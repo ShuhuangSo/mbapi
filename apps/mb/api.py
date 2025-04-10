@@ -179,8 +179,8 @@ async def get_day_orders():
     """
     手动获取昨天订单报告，并发送到飞书 
     """
-    from apps.mb.tasks import get_day_orders_stats_task
-    task = get_day_orders_stats_task.delay()
+    from apps.mb.tasks import get_day_orders_report_task
+    task = get_day_orders_report_task.delay()
     return {"status": "started", "task_id": task.id}
 
 

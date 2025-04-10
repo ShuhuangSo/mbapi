@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     # fastapi配置
     FASTAPI_DEBUG: bool
+    # 订单日报接口配置
+    MB_DAY_REPORT_URL: str
 
     model_config = SettingsConfigDict(env_file=".env",
                                       env_file_encoding="utf-8",

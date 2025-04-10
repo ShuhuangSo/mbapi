@@ -1,5 +1,4 @@
 from celery_app import celery_app
-from celery import shared_task
 from datetime import datetime, timedelta
 import requests
 import math
@@ -14,6 +13,7 @@ from decimal import Decimal
 from tortoise import connections
 from tortoise.functions import Count
 import asyncio
+from config import config
 
 
 # 添加配置加载函数
@@ -330,7 +330,7 @@ def send_item_requests(order_ids):
     return response
 
 
-@shared_task
+@celery_app.task
 def get_day_orders_report_task():
     """
     Celery任务版本 - 每日订单统计报告
@@ -594,7 +594,7 @@ def get_day_orders_report_task():
                 headers={
                     "Authorization": "Bearer app-DhlGqIKpgBtZipEIkFwb4T3L"
                 },
-                url="http://8.155.49.194/v1/workflows/run",
+                url=config.MB_DAY_REPORT_URL,
                 json={
                     "inputs": {
                         "store_order_stats":
