@@ -1,0 +1,77 @@
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+      - redis
+    command: bash -c "./wait-for-mysql.sh && aerich upgrade && uvicorn main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - .:/app
+    networks:
+      - mbapi_network
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+    networks:
+      - mbapi_network
+
+  redis:
+    image: redis:7.0
+    ports:
+      - "6379:6379"
+    networks:
+      - mbapi_network  # 修改为已定义的网络名称
+
+  celery:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: celery -A celery_app worker --loglevel=info
+    volumes:
+      - .:/app
+    networks:
+      - mbapi_network
+
+  beat:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: celery -A celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    networks:
+      - mbapi_network
+
+networks:
+  mbapi_network:
+    driver: bridge
+
+volumes:
+  mysql_data:

@@ -1,0 +1,21 @@
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 项目特定目录
+.mbapi/
+
+# 环境变量文件
+#.env
+
+# IDE配置
+.idea/
+.vscode/
+
+# 数据库文件
+*.sqlite
+*.db
+
+# 日志文件
+*.log
