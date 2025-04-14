@@ -612,6 +612,8 @@ def get_day_orders_report_task():
                 url=config.MB_DAY_REPORT_URL,
                 json={
                     "inputs": {
+                        "report_type":
+                        "DAY",
                         "store_order_stats":
                         json.dumps(convert_decimals(
                             store_stats_list)),  # 按店铺名整理的每日订单数据
