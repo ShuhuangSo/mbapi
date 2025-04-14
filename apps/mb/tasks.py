@@ -72,6 +72,8 @@ async def get_mb_orders(start_time, end_time):
                 page_data = response.json()
                 all_orders.extend(page_data.get('orderDataList', []))
 
+        create_num = 0  # 新增订单数量
+        update_num = 0  # 更新订单数量
         # 处理所有订单数据
         for order in all_orders:
             # 物流信息
@@ -89,6 +91,7 @@ async def get_mb_orders(start_time, end_time):
 
             od = await Orders.filter(order_number=order['platformOrderId']
                                      ).first()
+            mark_update = False  # 标记是否已更新订单
             if od:
                 # 订单更新了发货状态 --> 更新所有可能变化的字段
                 if od.order_status != order['showOrderStatusText'] and order[
@@ -111,12 +114,14 @@ async def get_mb_orders(start_time, end_time):
                     od.order_note = order['orderRemarkText']  # 订单备注
                     od.is_change_confirm = True  # 变更是否确认
                     await od.save()
+                    mark_update = True
                 # 仅订单状态变化
                 if od.order_status != order['showOrderStatusText']:
                     od.order_status = order['showOrderStatusText']
                     od.is_refund = True if order[
                         'isRefund'] == 1 else False  # 是否退款
                     await od.save()
+                    mark_update = True
                 # 仅物流信息变化
                 if od.carrier_name != carrier_name or od.tracking_number != order[
                         'trackNumber']:
@@ -124,6 +129,9 @@ async def get_mb_orders(start_time, end_time):
                     od.carrier_company = carrier_company  # 物流公司名称
                     od.tracking_number = order['trackNumber']  # 物流跟踪号
                     await od.save()
+                    mark_update = True
+                if mark_update:
+                    update_num += 1  # 更新订单数量
                 continue
             # 这里可以添加订单处理逻辑
             orders = Orders()
@@ -196,8 +204,10 @@ async def get_mb_orders(start_time, end_time):
             orders.margin = order['profit_rate']  # 利润率
 
             # 平台备注
-            orders.platform_note = order['buyerMessageText']  # 买家留言/平台备注
+            orders.platform_note = order['buyerMessageText'][:500] if order[
+                'buyerMessageText'] else None  # 买家留言/平台备注(截取前500字符)
             await orders.save()
+            create_num += 1  # 新增订单数量+1
 
         id_list = []
         for order in all_orders:
@@ -283,7 +293,12 @@ async def get_mb_orders(start_time, end_time):
                 od.sku_total_qty = len(tr_tags)
                 await od.save()
 
-        return {"status": "success", "message": f"获取到 {len(all_orders)} 个订单数据"}
+        return {
+            "status":
+            "success",
+            "message":
+            f"获取到 {len(all_orders)} 个订单数据，新增 {create_num} 个，更新 {update_num} 个"
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
