@@ -78,7 +78,7 @@ def get_task_result(task_id: str):
         return {"task_status": "pending"}
 
 
-@router.post("/sync_orders/", summary="同步马帮订单数据")
+@router.post("/sync_orders/", summary="同步mb订单数据")
 async def sync_orders(request: Request,
                       time_range: dict = Body(
                           ...,
@@ -87,7 +87,7 @@ async def sync_orders(request: Request,
                               "end_time": "2025-04-10 23:59:59"
                           })):
     """
-    获取马帮订单数据
+    获取mb订单数据
     参数:
         start_time: 开始时间 (格式: YYYY-MM-DD HH:MM:SS)
         end_time: 结束时间 (格式: YYYY-MM-DD HH:MM:SS)
@@ -184,8 +184,18 @@ async def get_day_orders():
     return {"status": "started", "task_id": task.id}
 
 
+@router.get("/week_orders_report/", summary="发送每周订单报告")
+async def get_week_orders():
+    """
+    手动获取上一周订单报告，并发送到飞书 
+    """
+    from apps.mb.tasks import get_week_orders_report_task
+    task = get_week_orders_report_task.delay()
+    return {"status": "started", "task_id": task.id}
+
+
 @router.get("/mb_token/",
-            summary="获取已保存的马帮token",
+            summary="获取已保存的mb token",
             description="获取mb_token.json文件中的cookie和update_time")
 async def get_mb_token():
     """
@@ -197,7 +207,7 @@ async def get_mb_token():
     return {"cookie": config["cookie"], "update_time": config["update_time"]}
 
 
-@router.post("/update_cookie/", summary="更新马帮token")
+@router.post("/update_cookie/", summary="更新mbtoken")
 async def update_cookie(c_value: str = Body(..., embed=True)):
     """
     更新mb_token.json文件中的cookie值

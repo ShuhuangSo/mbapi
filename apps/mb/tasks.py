@@ -23,14 +23,14 @@ def load_config():
         return json.load(f)
 
 
-# 自定义时间获取马帮订单任务
+# 自定义时间获取mb订单任务
 @celery_app.task
 def get_orders_task(start_time, end_time):
     result = asyncio.run(get_mb_orders(start_time, end_time))
     return result
 
 
-# 获取马帮最近一周订单任务
+# 获取mb最近一周订单任务
 @celery_app.task
 def get_oneweek_orders():
     end_date = (datetime.now()).strftime("%Y-%m-%d")
@@ -45,7 +45,7 @@ def get_oneweek_orders():
 
 async def get_mb_orders(start_time, end_time):
     """
-    获取马帮订单数据
+    获取mb订单数据
     """
     # 初始化数据库连接
     await Tortoise.init(config=TORTOISE_ORM)
@@ -612,6 +612,8 @@ def get_day_orders_report_task():
                 url=config.MB_DAY_REPORT_URL,
                 json={
                     "inputs": {
+                        "report_type":
+                        "DAY",
                         "store_order_stats":
                         json.dumps(convert_decimals(
                             store_stats_list)),  # 按店铺名整理的每日订单数据
@@ -647,6 +649,300 @@ def get_day_orders_report_task():
                 return {"status": "success", "message": "订单日报发送成功"}
             else:
                 return {"status": "error", "message": "订单日报发送失败"}
+
+        except Exception as e:
+            print(f"获取订单数据出错: {str(e)}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            await Tortoise.close_connections()
+
+    # 运行异步函数并返回结果
+    return asyncio.run(_async_task())
+
+
+@celery_app.task
+def get_week_orders_report_task():
+    """
+    Celery任务版本 - 每周订单统计报告
+    """
+
+    async def _async_task():
+        # 初始化数据库连接
+        await Tortoise.init(config=TORTOISE_ORM)
+        try:
+            # 获取上周一和上周日的日期
+            today = datetime.now()
+            last_sunday = today - timedelta(days=today.weekday() + 1)
+            last_monday = last_sunday - timedelta(days=6)
+
+            # 获取上上周一和上上周日的日期
+            prev_week_sunday = last_monday - timedelta(days=1)
+            prev_week_monday = prev_week_sunday - timedelta(days=6)
+
+            # 获取上周总订单量前8的店铺
+            top_stores = await Orders.filter(
+                paid_time__range=(last_monday, last_sunday)
+            ).annotate(
+                count=Count("order_id")
+            ).group_by("store_name").order_by("-count").limit(8).values_list(
+                "store_name", flat=True)
+
+            if not top_stores:
+                return {"status": "error", "message": "订单数据为空"}
+
+            # 使用原始SQL查询两周的数据
+            store_names = "','".join(top_stores)
+            query = f"""
+            SELECT
+                DATE(paid_time) AS date,
+                store_name,
+                COUNT(id) AS count
+            FROM orders
+            WHERE
+                (paid_time BETWEEN '{prev_week_monday}' AND '{prev_week_sunday}'
+                OR paid_time BETWEEN '{last_monday}' AND '{last_sunday}')
+                AND store_name IN ('{store_names}')
+            GROUP BY date, store_name
+            ORDER BY date
+            """
+
+            connection = connections.get("default")
+            results = await connection.execute_query_dict(query)
+
+            # 格式化结果
+            formatted_data = {}
+            for row in results:
+                date_str = row['date'].strftime("%Y-%m-%d")
+                if date_str not in formatted_data:
+                    formatted_data[date_str] = {}
+                formatted_data[date_str][row['store_name']] = row['count']
+
+            # 按店铺名整理两周数据
+            store_stats_list = []
+            for store in top_stores:
+                # 获取上上周和上周的总销量
+                prev_week_total = sum(
+                    row['count'] for row in results
+                    if datetime.strptime(row['date'].strftime("%Y-%m-%d"),
+                                         "%Y-%m-%d") >= prev_week_monday
+                    and datetime.strptime(row['date'].strftime("%Y-%m-%d"),
+                                          "%Y-%m-%d") <= prev_week_sunday
+                    and row['store_name'] == store)
+
+                last_week_total = sum(
+                    row['count'] for row in results
+                    if datetime.strptime(row['date'].strftime(
+                        "%Y-%m-%d"), "%Y-%m-%d") >= last_monday and datetime.
+                    strptime(row['date'].strftime("%Y-%m-%d"), "%Y-%m-%d") <=
+                    last_sunday and row['store_name'] == store)
+
+                # 添加趋势标记
+                trend = " → "
+                if prev_week_total > 0:
+                    if last_week_total > prev_week_total:
+                        trend = " ↗️"
+                    elif last_week_total < prev_week_total:
+                        trend = " ↘️"
+
+                store_stats_list.append({
+                    "store_name":
+                    store,
+                    "od_qty":
+                    f"{prev_week_total}{trend}{last_week_total}"
+                })
+
+            # 获取上周总订单数量和总订单金额
+            total_query = f"""
+            SELECT 
+                COUNT(order_id) AS total_count,
+                SUM(order_price_rmb) AS total_amount
+            FROM orders
+            WHERE 
+                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            """
+            total_result = await connection.execute_query_dict(total_query)
+            total_stats = {
+                "total_count":
+                total_result[0]['total_count'] if total_result else 0,
+                "total_amount":
+                f"{float(total_result[0]['total_amount']):,.2f} 元" if
+                total_result and total_result[0]['total_amount'] else "0.00 元"
+            }
+
+            # 获取上周销量前10的商品
+            top_products_query = f"""
+            SELECT 
+                oi.sku,
+                oi.item_name,
+                oi.image_url,
+                SUM(oi.item_qty) AS total_qty
+            FROM orders o
+            JOIN items oi ON o.id = oi.order_id
+            WHERE 
+                o.paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            GROUP BY oi.sku, oi.item_name, oi.image_url
+            ORDER BY total_qty DESC
+            LIMIT 10
+            """
+            top_products = await connection.execute_query_dict(
+                top_products_query)
+
+            # 格式化商品数据
+            formatted_products = []
+            for product in top_products:
+                formatted_products.append({
+                    "sku":
+                    product["sku"],
+                    "item_name":
+                    product["item_name"],
+                    "image_url":
+                    product["image_url"],
+                    "total_qty":
+                    int(product["total_qty"])
+                })
+
+            # 获取上周按商品ID统计的订单数据(仅按item_id分组)
+            item_stats_query = f"""
+            SELECT 
+                oi.item_id,
+                oi.item_url,
+                MAX(oi.item_name) AS item_name,
+                o.store_name,
+                COUNT(DISTINCT o.id) AS order_count
+            FROM orders o
+            JOIN items oi ON o.id = oi.order_id
+            WHERE 
+                o.paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            GROUP BY oi.item_id
+            ORDER BY order_count DESC
+            LIMIT 10
+            """
+            item_stats = await connection.execute_query_dict(item_stats_query)
+
+            # 格式化商品ID数据
+            formatted_items = []
+            for item in item_stats:
+                item_name = item["item_name"]  # 保留item_name但可能不准确
+                # 保留前10个汉字，超过部分用...替代
+                short_name = (item_name[:10] +
+                              '...') if len(item_name) > 10 else item_name
+                formatted_items.append({
+                    "item_id": item["item_id"],
+                    "item_url": item["item_url"],
+                    "item_name": short_name,
+                    "store_name": item["store_name"],
+                    "order_count": item["order_count"]
+                })
+
+            # 获取上周金额前5的订单
+            top_orders_query = f"""
+            SELECT 
+                order_number,
+                store_name,
+                order_price_f,
+                currency
+            FROM orders
+            WHERE 
+                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            ORDER BY order_price_rmb DESC
+            LIMIT 5
+            """
+            top_orders = await connection.execute_query_dict(top_orders_query)
+
+            # 格式化订单数据
+            formatted_top_orders = []
+            for order in top_orders:
+                formatted_top_orders.append({
+                    "order_number":
+                    order["order_number"],
+                    "store_name":
+                    order["store_name"],
+                    "order_price_f":
+                    float(order["order_price_f"]),
+                    "currency":
+                    order["currency"]
+                })
+
+            # 获取上周按物流商统计的订单数据
+            carrier_stats_query = f"""
+            SELECT 
+                carrier_name,
+                COUNT(order_id) AS order_count
+            FROM orders
+            WHERE 
+                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                AND carrier_name IS NOT NULL
+            GROUP BY carrier_name
+            ORDER BY order_count DESC
+            """
+            carrier_stats = await connection.execute_query_dict(
+                carrier_stats_query)
+
+            # 格式化物流商数据
+            formatted_carriers = []
+            for carrier in carrier_stats:
+                formatted_carriers.append({
+                    "carrier_name":
+                    carrier["carrier_name"],
+                    "order_count":
+                    carrier["order_count"]
+                })
+
+            # 转换Decimal类型为float
+            def convert_decimals(obj):
+                if isinstance(obj, Decimal):
+                    return float(obj)
+                elif isinstance(obj, dict):
+                    return {k: convert_decimals(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [convert_decimals(item) for item in obj]
+                return obj
+
+            import requests
+            import json
+
+            res = requests.post(
+                headers={
+                    "Authorization": "Bearer app-DhlGqIKpgBtZipEIkFwb4T3L"
+                },
+                url=config.MB_DAY_REPORT_URL,
+                json={
+                    "inputs": {
+                        "report_type":
+                        "WEEK",
+                        "store_order_stats":
+                        json.dumps(convert_decimals(
+                            store_stats_list)),  # 按店铺名整理的每日订单数据
+                        "total_count":
+                        total_stats["total_count"],  # 当天总订单数量
+                        "total_amount":
+                        total_stats["total_amount"],  # 当天总订单金额
+                        "full_date":
+                        f"{last_monday.strftime('%Y-%m-%d')} 至 {last_sunday.strftime('%Y-%m-%d')}",  # 上一周
+                        "formatted_carriers":
+                        json.dumps(convert_decimals(
+                            formatted_carriers)),  # 当天按物流商统计的订单数据
+                        "formatted_products":
+                        json.dumps(
+                            convert_decimals(formatted_products)),  # 当天销量前5的商品
+                        "formatted_items":
+                        json.dumps(convert_decimals(
+                            formatted_items)),  # 当天按商品item_id统计的订单数据
+                        "formatted_top_orders":
+                        json.dumps(convert_decimals(
+                            formatted_top_orders)),  # 当天金额前5的订单
+                        "formatted_data":
+                        json.dumps(convert_decimals(formatted_data))  # 原始数据
+                    },
+                    "response_mode": "blocking",
+                    "user": "abc-123"
+                })
+            print(res.json())
+            return {"status": "success", "message": "订单周报发送成功"}
+            # if res.json()['data'].get("status") == "succeeded":
+            #     return {"status": "success", "message": "订单周报发送成功"}
+            # else:
+            #     return {"status": "error", "message": "订单周报发送失败"}
 
         except Exception as e:
             print(f"获取订单数据出错: {str(e)}")
