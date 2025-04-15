@@ -679,9 +679,17 @@ def get_week_orders_report_task():
             prev_week_sunday = last_monday - timedelta(days=1)
             prev_week_monday = prev_week_sunday - timedelta(days=6)
 
+            # 转换日期格式
+            start_datetime = last_monday.strftime("%Y-%m-%d") + " 00:00:00"
+            end_datetime = last_sunday.strftime("%Y-%m-%d") + " 23:59:59"
+            prev_start_datetime = prev_week_monday.strftime(
+                "%Y-%m-%d") + " 00:00:00"
+            prev_end_datetime = prev_week_sunday.strftime(
+                "%Y-%m-%d") + " 23:59:59"
+
             # 获取上周总订单量前8的店铺
             top_stores = await Orders.filter(
-                paid_time__range=(last_monday, last_sunday)
+                paid_time__range=(start_datetime, end_datetime)
             ).annotate(
                 count=Count("order_id")
             ).group_by("store_name").order_by("-count").limit(8).values_list(
@@ -699,8 +707,8 @@ def get_week_orders_report_task():
                 COUNT(id) AS count
             FROM orders
             WHERE
-                (paid_time BETWEEN '{prev_week_monday}' AND '{prev_week_sunday}'
-                OR paid_time BETWEEN '{last_monday}' AND '{last_sunday}')
+                (paid_time BETWEEN '{prev_start_datetime}' AND '{prev_end_datetime}'
+                OR paid_time BETWEEN '{start_datetime}' AND '{end_datetime}')
                 AND store_name IN ('{store_names}')
             GROUP BY date, store_name
             ORDER BY date
@@ -723,18 +731,23 @@ def get_week_orders_report_task():
                 # 获取上上周和上周的总销量
                 prev_week_total = sum(
                     row['count'] for row in results
-                    if datetime.strptime(row['date'].strftime("%Y-%m-%d"),
-                                         "%Y-%m-%d") >= prev_week_monday
-                    and datetime.strptime(row['date'].strftime("%Y-%m-%d"),
-                                          "%Y-%m-%d") <= prev_week_sunday
+                    if datetime.strptime(row['date'].strftime(
+                        "%Y-%m-%d"), "%Y-%m-%d") >= datetime.strptime(
+                            prev_week_monday.strftime("%Y-%m-%d"), "%Y-%m-%d")
+                    and datetime.strptime(row['date'].strftime(
+                        "%Y-%m-%d"), "%Y-%m-%d") <= datetime.strptime(
+                            prev_week_sunday.strftime("%Y-%m-%d"), "%Y-%m-%d")
                     and row['store_name'] == store)
 
                 last_week_total = sum(
                     row['count'] for row in results
                     if datetime.strptime(row['date'].strftime(
-                        "%Y-%m-%d"), "%Y-%m-%d") >= last_monday and datetime.
-                    strptime(row['date'].strftime("%Y-%m-%d"), "%Y-%m-%d") <=
-                    last_sunday and row['store_name'] == store)
+                        "%Y-%m-%d"), "%Y-%m-%d") >= datetime.strptime(
+                            last_monday.strftime("%Y-%m-%d"), "%Y-%m-%d")
+                    and datetime.strptime(row['date'].strftime(
+                        "%Y-%m-%d"), "%Y-%m-%d") <= datetime.strptime(
+                            last_sunday.strftime("%Y-%m-%d"), "%Y-%m-%d")
+                    and row['store_name'] == store)
 
                 # 添加趋势标记
                 trend = ""
@@ -755,7 +768,7 @@ def get_week_orders_report_task():
                 SUM(order_price_rmb) AS total_amount
             FROM orders
             WHERE 
-                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
             """
             total_result = await connection.execute_query_dict(total_query)
             total_stats = {
@@ -776,7 +789,7 @@ def get_week_orders_report_task():
             FROM orders o
             JOIN items oi ON o.id = oi.order_id
             WHERE 
-                o.paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                o.paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
             GROUP BY oi.sku, oi.item_name, oi.image_url
             ORDER BY total_qty DESC
             LIMIT 10
@@ -809,7 +822,7 @@ def get_week_orders_report_task():
             FROM orders o
             JOIN items oi ON o.id = oi.order_id
             WHERE 
-                o.paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                o.paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
             GROUP BY oi.item_id
             ORDER BY order_count DESC
             LIMIT 10
@@ -840,7 +853,7 @@ def get_week_orders_report_task():
                 currency
             FROM orders
             WHERE 
-                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
             ORDER BY order_price_rmb DESC
             LIMIT 5
             """
@@ -867,7 +880,7 @@ def get_week_orders_report_task():
                 COUNT(order_id) AS order_count
             FROM orders
             WHERE 
-                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
                 AND carrier_name IS NOT NULL
             GROUP BY carrier_name
             ORDER BY order_count DESC
@@ -889,7 +902,7 @@ def get_week_orders_report_task():
             top_stores_query = f"""
             SELECT store_name
             FROM orders
-            WHERE paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            WHERE paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
             GROUP BY store_name
             ORDER BY COUNT(order_id) DESC
             LIMIT 6
@@ -908,7 +921,7 @@ def get_week_orders_report_task():
                 COUNT(order_id) AS order_count
             FROM orders
             WHERE 
-                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                paid_time BETWEEN '{start_datetime}' AND '{end_datetime}'
                 AND store_name IN ('{"','".join(top_store_names)}')
             GROUP BY store_name, DAYNAME(paid_time)
             ORDER BY store_name, FIELD(weekday, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
