@@ -737,18 +737,15 @@ def get_week_orders_report_task():
                     last_sunday and row['store_name'] == store)
 
                 # 添加趋势标记
-                trend = " → "
-                if prev_week_total > 0:
-                    if last_week_total > prev_week_total:
-                        trend = " ↗️"
-                    elif last_week_total < prev_week_total:
-                        trend = " ↘️"
+                trend = ""
+                if prev_week_total > 0 and last_week_total < prev_week_total:
+                    trend = " ⬇️"
 
                 store_stats_list.append({
                     "store_name":
                     store,
                     "od_qty":
-                    f"{prev_week_total}{trend}{last_week_total}"
+                    f"{prev_week_total} → {last_week_total}{trend}"
                 })
 
             # 获取上周总订单数量和总订单金额
@@ -888,6 +885,58 @@ def get_week_orders_report_task():
                     carrier["order_count"]
                 })
 
+            # 先获取上周订单量前8的店铺
+            top_stores_query = f"""
+            SELECT store_name
+            FROM orders
+            WHERE paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+            GROUP BY store_name
+            ORDER BY COUNT(order_id) DESC
+            LIMIT 6
+            """
+            top_stores_result = await connection.execute_query_dict(
+                top_stores_query)
+            top_store_names = [
+                store['store_name'] for store in top_stores_result
+            ]
+
+            # 获取这些店铺上周每日订单数据
+            account_daily_query = f"""
+            SELECT 
+                store_name AS account,
+                DAYNAME(paid_time) AS weekday,
+                COUNT(order_id) AS order_count
+            FROM orders
+            WHERE 
+                paid_time BETWEEN '{last_monday}' AND '{last_sunday}'
+                AND store_name IN ('{"','".join(top_store_names)}')
+            GROUP BY store_name, DAYNAME(paid_time)
+            ORDER BY store_name, FIELD(weekday, 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+            """
+            account_daily_stats = await connection.execute_query_dict(
+                account_daily_query)
+
+            # 格式化账号每日数据
+            formatted_account_daily = []
+            weekday_cn_map = {
+                'Monday': '周一',
+                'Tuesday': '周二',
+                'Wednesday': '周三',
+                'Thursday': '周四',
+                'Friday': '周五',
+                'Saturday': '周六',
+                'Sunday': '周日'
+            }
+            for stat in account_daily_stats:
+                formatted_account_daily.append({
+                    "account":
+                    stat["account"],
+                    "type":
+                    weekday_cn_map.get(stat["weekday"], stat["weekday"]),
+                    "value":
+                    stat["order_count"]
+                })
+
             # 转换Decimal类型为float
             def convert_decimals(obj):
                 if isinstance(obj, Decimal):
@@ -931,18 +980,19 @@ def get_week_orders_report_task():
                         "formatted_top_orders":
                         json.dumps(convert_decimals(
                             formatted_top_orders)),  # 当天金额前5的订单
+                        "formatted_account_daily":
+                        json.dumps(formatted_account_daily),  # 账号每日订单数据
                         "formatted_data":
                         json.dumps(convert_decimals(formatted_data))  # 原始数据
                     },
                     "response_mode": "blocking",
                     "user": "abc-123"
                 })
-            print(res.json())
-            return {"status": "success", "message": "订单周报发送成功"}
-            # if res.json()['data'].get("status") == "succeeded":
-            #     return {"status": "success", "message": "订单周报发送成功"}
-            # else:
-            #     return {"status": "error", "message": "订单周报发送失败"}
+
+            if res.json()['data'].get("status") == "succeeded":
+                return {"status": "success", "message": "订单周报发送成功"}
+            else:
+                return {"status": "error", "message": "订单周报发送失败"}
 
         except Exception as e:
             print(f"获取订单数据出错: {str(e)}")

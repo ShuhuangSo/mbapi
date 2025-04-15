@@ -31,6 +31,11 @@ celery_app.conf.beat_schedule = {
         'schedule': crontab(minute='0', hour='9'),  # 每天9点执行
         'args': ()  # 可以在这里添加任务参数
     },
+    'send-week-report-weekly': {
+        'task': 'apps.mb.tasks.get_week_orders_report_task',  # 获取周订单报告
+        'schedule': crontab(minute='0', hour='10', day_of_week=2),  # 每周二10点执行
+        'args': ()  # 可以在这里添加任务参数
+    },
 }
 
 # 自动发现各个 app 中的任务
