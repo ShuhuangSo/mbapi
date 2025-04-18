@@ -4,7 +4,7 @@ from typing import List
 from decimal import Decimal
 import pytz
 from datetime import datetime
-from apps.mb.models import Orders
+from apps.mb.models import Orders, OrderItems
 from apps.mb.schemas import OrdersForm
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
@@ -229,3 +229,28 @@ async def update_cookie(c_value: str = Body(..., embed=True)):
         json.dump(config, f, indent=4)
 
     return {"status": "success", "message": "cookie更新成功"}
+
+
+@router.post("/get_order_info/", summary="获取mb订单额外信息")
+async def get_order_info(order_nums: List = Body(..., embed=True)):
+    """
+    获取mb订单额外信息
+    参数:
+        order_nums: 订单编号列表
+    """
+    order_list = []
+    if order_nums:
+        for order_num in order_nums:
+            order = await Orders.get_or_none(order_number=order_num)
+            if not order:
+                continue
+            order_items = await OrderItems.filter(order=order).values(
+                'item_cost', 'sku', 'platform_property')
+            order_list.append({
+                'order_number': order.order_number,
+                'postage_out_rmb': order.postage_out_rmb,
+                'profit_rmb': round(float(order.profit_rmb), 2),
+                'order_items': order_items
+            })
+
+    return {"order_list": order_list}
