@@ -305,7 +305,10 @@ async def get_order_list_info(orders: List = Body(...)):
             country = od.get('country', '')
             country_code = 'AU' if country == '澳大利亚' else 'GB' if country == '英国' else ''
             post_code = od.get('postCode', '')
-            weight = int(od.get('weight', 0))
+            try:
+                weight = int(od.get('weight', 0))
+            except (ValueError, TypeError):
+                weight = 0
 
             # 获取邮编分区
             area_list = await AreaCode.filter(country_code=country_code,
