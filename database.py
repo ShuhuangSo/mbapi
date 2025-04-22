@@ -8,7 +8,7 @@ MYSQL_PASSWORD = config.MYSQL_PASSWORD
 MYSQL_DATABASE = config.MYSQL_DATABASE
 
 # 数据库相关模型类
-TORTOISE_MODELS = ["aerich.models", "apps.mb.models"]
+TORTOISE_MODELS = ["aerich.models", "apps.mb.models", "apps.logistic.models"]
 
 # 配置数据库连接
 TORTOISE_ORM = {

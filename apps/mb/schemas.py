@@ -25,6 +25,7 @@ class OrdersForm(BaseModel):
     paid_time: Optional[datetime] = None
     platform: Optional[str] = None
     store_name: Optional[str] = None
+    carrier_name: Optional[str] = None
     order_status: Optional[str] = None
     currency: Optional[str] = None
     order_price_f: Optional[float] = None

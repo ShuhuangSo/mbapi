@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytz
 from datetime import datetime
 from apps.mb.models import Orders, OrderItems
+from apps.logistic.models import AreaCode, PostPrice
 from apps.mb.schemas import OrdersForm
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
@@ -231,7 +232,7 @@ async def update_cookie(c_value: str = Body(..., embed=True)):
     return {"status": "success", "message": "cookie更新成功"}
 
 
-@router.post("/get_order_info/", summary="获取mb订单额外信息")
+@router.post("/get_order_info/", summary="获取mb订单额外信息(客服信息)")
 async def get_order_info(order_nums: List = Body(..., embed=True)):
     """
     获取mb订单额外信息
@@ -246,11 +247,131 @@ async def get_order_info(order_nums: List = Body(..., embed=True)):
                 continue
             order_items = await OrderItems.filter(order=order).values(
                 'item_cost', 'sku', 'platform_property')
+            # 获取邮编分区
+            area_list = await AreaCode.filter(
+                country_code=order.country_code,
+                post_code=order.post_code).values('name', 'area', 'is_service',
+                                                  'ship_code')
+            # 添加信封渠道
+            if order.country_code == 'AU':
+                area_list.append({
+                    'name': '信封',
+                    'area': None,
+                    'is_service': True,
+                    'ship_code': 'ZMAU-L'
+                })
+            post_list = []
+            for i in area_list:
+                postage = await calc_post_price(i['area'],
+                                                int(order.order_weight),
+                                                i['ship_code'])
+                post_list.append({
+                    'name': i['name'],
+                    'area': i['area'],
+                    'is_service': i['is_service'],
+                    'postage': postage
+                })
+
+            # 按postage从小到大排序
+            post_list.sort(key=lambda x: x['postage'])
             order_list.append({
                 'order_number': order.order_number,
                 'postage_out_rmb': order.postage_out_rmb,
                 'profit_rmb': round(float(order.profit_rmb), 2),
-                'order_items': order_items
+                'order_items': order_items,
+                'post_list': post_list
             })
 
     return {"order_list": order_list}
+
+
+@router.post("/get_order_list_info/", summary="获取mb订单列表额外信息(订单列表页)")
+async def get_order_list_info(orders: List = Body(...)):
+    """
+    获取mb订单列表额外信息(订单列表页)
+    参数:
+        orders: 订单列表，格式示例:
+        [{
+            orderNumber: "081298327265", 
+            country: "澳大利亚",
+            postCode: "2848",
+            weight: "80"
+        }]
+    """
+    order_list = []
+    if orders:
+        for od in orders:
+            order_num = od.get('orderNumber', '')
+            country = od.get('country', '')
+            country_code = 'AU' if country == '澳大利亚' else 'GB' if country == '英国' else ''
+            post_code = od.get('postCode', '')
+            weight = int(od.get('weight', 0))
+
+            # 获取邮编分区
+            area_list = await AreaCode.filter(country_code=country_code,
+                                              post_code=post_code).values(
+                                                  'name', 'area', 'is_service',
+                                                  'ship_code')
+            # 添加信封渠道
+            if country_code == 'AU':
+                area_list.append({
+                    'name': '信封',
+                    'area': None,
+                    'is_service': True,
+                    'ship_code': 'ZMAU-L'
+                })
+            post_list = []
+            # 英国添加联邮通(普货)渠道
+            if country_code == 'GB':
+                post_list.append({
+                    'name':
+                    '联邮通(普货)',
+                    'area':
+                    None,
+                    'is_service':
+                    True,
+                    'postage':
+                    await calc_post_price(None, weight, '4PX_WBP')
+                })
+            for i in area_list:
+                postage = await calc_post_price(i['area'], weight,
+                                                i['ship_code'])
+                post_list.append({
+                    'name': i['name'],
+                    'area': i['area'],
+                    'is_service': i['is_service'],
+                    'postage': postage if weight else 0
+                })
+
+            # 按postage从小到大排序
+            post_list.sort(key=lambda x: x['postage'])
+            order_list.append({
+                'order_number': order_num,
+                'post_list': post_list
+            })
+
+    return {"order_list": order_list}
+
+
+async def calc_post_price(area: str, weight: int, carrier_code: str):
+    """
+    计算订单运费
+    参数:
+        area: 区域
+        weight: 重量(克)
+        carrier_code: 物流渠道代码
+    返回: 运费计算结果
+    """
+
+    # 查询符合条件的物流价格
+    price = await PostPrice.filter(area=area,
+                                   carrier_code=carrier_code,
+                                   min_weight__lte=weight,
+                                   max_weight__gte=weight).first()
+
+    if not price:
+        return 0
+
+    # 计算运费: calc_price * weight / 1000 + basic_price
+    total_price = (price.calc_price * weight / 1000) + price.basic_price
+    return round(total_price, 2)
