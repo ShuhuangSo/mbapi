@@ -15,6 +15,55 @@ from tortoise.functions import Count
 import asyncio
 from config import config
 
+# 通用时间解析函数，处理各种时间格式和时区信息
+def robust_time_parse(time_str, default=None):
+    """
+    健壮的时间解析函数，能处理多种时间格式和时区信息
+    支持格式：
+    - YYYY-MM-DD HH:MM:SS
+    - YYYY-MM-DD HH:MM
+    - YYYY-MM-DD
+    - 带有时区信息的格式如：YYYY-MM-DD HH:MM:SS(UTC+8)
+    """
+    if not time_str or time_str == '--':
+        return default
+    
+    # 移除时区信息
+    if '(UTC+8)' in time_str:
+        time_str = time_str.replace(' (UTC+8)', '').replace('(UTC+8)', '')
+    
+    # 尝试不同的时间格式
+    formats_to_try = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d"
+    ]
+    
+    for fmt in formats_to_try:
+        try:
+            return datetime.strptime(time_str, fmt)
+        except ValueError:
+            continue
+    
+    # 如果都失败但格式看起来像 "HH:MM" 类型，尝试添加秒数
+    if len(time_str.split(':')) == 2:
+        try:
+            return datetime.strptime(time_str + ':00', "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    
+    # 最终尝试 - 对于只有日期和小时:分钟的格式
+    if ' ' in time_str and len(time_str.split(' ')[1].split(':')) == 2:
+        try:
+            return datetime.strptime(time_str + ':00', "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    
+    # 如果所有尝试都失败，返回默认值
+    if default is not None:
+        return default
+    raise ValueError(f"无法解析时间字符串: {time_str}")
+
 
 # 添加配置加载函数
 def load_config():
@@ -97,9 +146,14 @@ async def get_mb_orders(start_time, end_time):
                 if od.order_status != order['showOrderStatusText'] and order[
                         'showOrderStatusText'] == '已发货':
                     od.order_status = order['showOrderStatusText']
-                    od.order_sent_time = datetime.strptime(  # type: ignore
-                        order['expressTime'] + ':00', "%Y-%m-%d %H:%M:%S"
-                    ) if order['expressTime'] != '--' else None  # 发货时间
+                    # 使用全局健壮时间解析函数处理发货时间
+                    if order['expressTime'] != '--':
+                        if 'expressTimezone' in order and order['expressTimezone'] and order['expressTimezone'] != '--':
+                            od.order_sent_time = robust_time_parse(order['expressTimezone'])  # type: ignore
+                        else:
+                            od.order_sent_time = robust_time_parse(order['expressTime'])  # type: ignore
+                    else:
+                        od.order_sent_time = None  # type: ignore
                     od.carrier_company = carrier_company  # 物流公司名称
                     od.carrier_name = carrier_name  # 承运商名称
                     od.tracking_number = order['trackNumber']  # 物流跟踪号
@@ -147,14 +201,30 @@ async def get_mb_orders(start_time, end_time):
             # 订单备注信息
             orders.order_note = order['orderRemarkText']  # 订单备注
 
-            # 订单时间信息
-            orders.paid_time = datetime.strptime(order['paidTime'] + ':00',
-                                                 "%Y-%m-%d %H:%M:%S")  # 付款时间
-            orders.order_sent_time = datetime.strptime(  # type: ignore
-                order['expressTime'] + ':00', "%Y-%m-%d %H:%M:%S"
-            ) if order['expressTime'] != '--' else None  # 发货时间
-            orders.create_time = datetime.strptime(order['createDateTimezone'],
-                                                   "%Y-%m-%d %H:%M:%S")  # 创建时间
+            # 处理付款时间
+            if 'paidTimeTimezone' in order and order['paidTimeTimezone'] and order['paidTimeTimezone'] != '--':
+                orders.paid_time = robust_time_parse(order['paidTimeTimezone'])
+            else:
+                orders.paid_time = robust_time_parse(order['paidTime'])
+            
+            # 处理发货时间
+            if order['expressTime'] != '--':
+                if 'expressTimezone' in order and order['expressTimezone'] and order['expressTimezone'] != '--':
+                    orders.order_sent_time = robust_time_parse(order['expressTimezone'])  # type: ignore
+                else:
+                    orders.order_sent_time = robust_time_parse(order['expressTime'])  # type: ignore
+            else:
+                orders.order_sent_time = None  # type: ignore
+            
+            # 处理创建时间
+            if 'createDateTimezone' in order and order['createDateTimezone'] and order['createDateTimezone'] != '--':
+                orders.create_time = robust_time_parse(order['createDateTimezone'])
+            else:
+                orders.create_time = robust_time_parse(order['createDate'])
+            
+            # 处理订单交付时间
+            if 'orderDeliverTimezone' in order and order['orderDeliverTimezone'] and order['orderDeliverTimezone'] != '--':
+                orders.order_deliver_time = robust_time_parse(order['orderDeliverTimezone'])  # type: ignore
 
             orders.carrier_company = carrier_company  # 物流公司名称
             orders.carrier_name = carrier_name  # 承运商名称

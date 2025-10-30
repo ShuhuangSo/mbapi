@@ -84,8 +84,8 @@ async def sync_orders(request: Request,
                       time_range: dict = Body(
                           ...,
                           example={
-                              "start_time": "2025-04-08 00:00:00",
-                              "end_time": "2025-04-10 23:59:59"
+                              "start_time": "2025-10-30 00:00:00",
+                              "end_time": "2025-10-30 23:59:59"
                           })):
     """
     获取mb订单数据
@@ -105,9 +105,11 @@ async def sync_orders(request: Request,
 
 
 @router.get("/celery/tasks/", summary="获取所有Celery任务状态")
-async def get_all_celery_tasks():
+async def get_all_celery_tasks(limit_completed: int = 10):
     """
     获取所有Celery任务状态
+    参数:
+        limit_completed: 限制返回的已完成任务数量，默认10条
     """
     inspector = celery_app.control.inspect()
 
@@ -116,7 +118,8 @@ async def get_all_celery_tasks():
 
     # 获取所有配置的定时任务计划
     scheduled = {
-        'configured_schedules': celery_app.conf.beat_schedule,
+        'configured_schedules': {k: {'task': v['task'], 'schedule': str(v['schedule'])} 
+                                for k, v in celery_app.conf.beat_schedule.items()},
         'pending_schedules': inspector.scheduled() or {}
     }
     # 获取保留任务
@@ -126,43 +129,46 @@ async def get_all_celery_tasks():
     completed_tasks = []
     if celery_app.backend:
         try:
-            # 获取最近100个已完成任务ID
-            task_ids = celery_app.backend.client.keys(
-                'celery-task-meta-*')[:100]
+            # 限制获取的任务ID数量，避免Redis操作过于耗时
+            task_ids = celery_app.backend.client.keys('celery-task-meta-*')[-limit_completed:]
             for task_id in task_ids:
                 task_id = task_id.decode().replace('celery-task-meta-', '')
-                result = AsyncResult(task_id, app=celery_app)
-                if result.ready():
+                try:
+                    # 简化获取任务元数据的操作
                     task_meta = celery_app.backend.get_task_meta(task_id)
-                    date_done = task_meta.get('date_done')
-                    if date_done:
-                        # 确保date_done是datetime对象
-                        if isinstance(date_done, str):
-                            date_done = datetime.fromisoformat(date_done)
-                        # 转换为北京时间
-                        utc_time = date_done.replace(tzinfo=pytz.UTC)
-                        beijing_time = utc_time.astimezone(
-                            pytz.timezone('Asia/Shanghai'))
-                        formatted_time = beijing_time.strftime(
-                            "%Y-%m-%d %H:%M:%S")
-                    else:
-                        formatted_time = None
-                    completed_tasks.append({
-                        'id': task_id,
-                        'status': result.status,
-                        'result': result.result,
-                        'date_done': formatted_time,
-                        '_raw_date_done': date_done
-                    })
+                    if task_meta.get('status') in ['SUCCESS', 'FAILURE', 'REVOKED']:
+                        # 只返回必要信息，避免处理过大的result
+                        date_done = task_meta.get('date_done')
+                        if date_done:
+                            # 简化时间处理
+                            try:
+                                if isinstance(date_done, str):
+                                    date_done = datetime.fromisoformat(date_done)
+                                # 简化时区转换
+                                formatted_time = date_done.strftime("%Y-%m-%d %H:%M:%S")
+                            except:
+                                formatted_time = str(date_done)
+                        else:
+                            formatted_time = None
+                        
+                        # 限制result大小
+                        result = task_meta.get('result')
+                        if result and isinstance(result, (dict, list)):
+                            # 对于复杂结果，只返回类型信息
+                            result = f"{type(result).__name__} (data omitted for performance)"
+                        
+                        completed_tasks.append({
+                            'id': task_id,
+                            'status': task_meta.get('status'),
+                            'result': result,
+                            'date_done': formatted_time
+                        })
+                except Exception as task_e:
+                    # 单个任务出错不影响整体
+                    continue
 
-            # 按原始时间排序
-            if completed_tasks:
-                completed_tasks.sort(key=lambda x: x['_raw_date_done']
-                                     if x['_raw_date_done'] else datetime.min,
-                                     reverse=True)
-                # 移除临时字段
-                for task in completed_tasks:
-                    task.pop('_raw_date_done', None)
+            # 简单排序，避免复杂操作
+            completed_tasks.sort(key=lambda x: x['date_done'] or '', reverse=True)
 
         except Exception as e:
             print(f"获取任务信息出错: {str(e)}")  # 添加错误日志
@@ -171,7 +177,8 @@ async def get_all_celery_tasks():
         'active': active,
         'scheduled': scheduled,
         'reserved': reserved,
-        'completed': completed_tasks
+        'completed': completed_tasks,
+        'info': f"已限制返回{limit_completed}条最近的完成任务以优化性能"
     }
 
 
